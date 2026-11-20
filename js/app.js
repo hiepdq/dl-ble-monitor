@@ -98,26 +98,43 @@ async function startLink() {
   await startSession();
 }
 
+const PROTO_LABEL = { new: 'new protocol (FW V5.x)', legacy: 'legacy 20-byte protocol (FW V4.x)' };
+
 /**
- * Protocol choice (Options): 'auto' tries the new protocol (datalogger FW V5.x) and falls back to
- * the legacy 20-byte protocol (FW V4.x) when the HANDSHAKE gets no answer.
+ * Protocols to try, in order. The firmware names its BLE module from the MCU UID:
+ * FW V4.x "Debugger-%03u" (Debugger_FW app_ble.c), FW V5.x "Debugger-%04u" (Datalogger_FW).
+ * 'auto' starts with the protocol the name points to and falls back to the other one.
  */
+function protocolOrder(choice, name) {
+  if (choice !== 'auto') {
+    return [choice];
+  }
+  return /^Debugger-\d{3}$/.test(name || '') ? ['legacy', 'new'] : ['new', 'legacy'];
+}
+
 async function startSession() {
-  const proto = $('optProto').value;
+  const choice = $('optProto').value;
+  const order = protocolOrder(choice, ui.link.name);
+  const tries = order.length > 1 ? 2 : 3;          // fail over sooner in auto mode
+  const make = {
+    new: () => new Session(ui.link, { handshakeTries: tries }),
+    legacy: () => new LegacySession(ui.link, { startTries: tries }),
+  };
   setStatus('Handshaking…', 'busy');
   try {
-    if (proto === 'legacy') {
-      await attach(new LegacySession(ui.link));
-    } else {
+    let note = order.length > 1 ? `name ${ui.link.name || '?'}: trying the ${PROTO_LABEL[order[0]]} first` : null;
+    for (let i = 0; i < order.length; i++) {
       try {
-        await attach(new Session(ui.link, { handshakeTries: proto === 'auto' ? 2 : 3 }));
+        await attach(make[order[i]](), note);
+        break;
       } catch (err) {
-        if (proto !== 'auto' || !err.noHandshake || !ui.link.connected) {
+        // the new protocol falls back only when the HANDSHAKE itself gets no answer
+        const noAnswer = order[i] === 'legacy' || err.noHandshake;
+        if (i === order.length - 1 || !noAnswer || !ui.link.connected) {
           throw err;
         }
-        setStatus('Trying legacy protocol…', 'busy');
-        await attach(new LegacySession(ui.link),
-          'no answer to HANDSHAKE (0x001): using the legacy 20-byte protocol (FW V4.x)');
+        setStatus(`Trying ${order[i + 1]} protocol…`, 'busy');
+        note = `${PROTO_LABEL[order[i]]}: ${err.message}. Trying the ${PROTO_LABEL[order[i + 1]]}`;
       }
     }
     const tag = ui.session.legacy ? ' (legacy)' : '';

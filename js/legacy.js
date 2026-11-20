@@ -42,7 +42,6 @@ const FW_YEAR_BASE = 20230000;         // Debugger_FW app.h
 
 const POLL_GAP_MS = 150;
 const ANSWER_TIMEOUT_MS = 1500;
-const START_TRIES = 3;
 const LOG_MAX = 300;
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -141,10 +140,11 @@ function targetIdToMapId(id) {
 
 /** Same interface as Session (model, start / stop / dispose, 'update' / 'log' events) plus select(). */
 export class LegacySession extends EventTarget {
-  constructor(transport) {
+  constructor(transport, { startTries = 3 } = {}) {
     super();
     this.legacy = true;
     this.t = transport;
+    this.startTries = startTries;
     this.parser = new LegacyParser();
     this.model = emptyModel();
     this.model.legacy = { status: null, fwDate: null, busTargetId: null, misses: 0 };
@@ -170,7 +170,7 @@ export class LegacySession extends EventTarget {
   async start() {
     this.parser.reset();
     this.running = true;
-    await this.ask(LEGACY_CMD.REFRESH_ALL, START_TRIES);
+    await this.ask(LEGACY_CMD.REFRESH_ALL, this.startTries);
     this.changed();
     this.poll();
   }
