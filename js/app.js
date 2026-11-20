@@ -7,13 +7,18 @@ import { Session } from './session.js';
 import { mapIdToTargetId, pcbaView } from './decode.js';
 
 const $ = (id) => document.getElementById(id);
+
 const RECONNECT_TRIES = 5;
+const RECONNECT_DELAY_MS = 1500;
 const STALE_MS = 5000;
+const LOG_LINES = 300;
+const CACHE_PREFIX = 'dl-ble-monitor-';        // same as sw.js
+const SW_READY_TIMEOUT_MS = 15000;
 
 const ui = {
   link: null,
   session: null,
-  wanted: false,           // user wants to stay connected (auto reconnect)
+  wanted: false,           // the user wants to stay connected (auto reconnect)
   reconnecting: false,
   demo: false,
   pcba: 0,
@@ -22,10 +27,11 @@ const ui = {
 };
 
 /* ------------------------------------------------------------------ helpers */
+const DASH = '–';
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
-const dash = '–';
-const val = (v, digits) => (v == null || Number.isNaN(v) ? dash : (digits == null ? String(v) : Number(v).toFixed(digits)));
-const hexv = (v, w = 4) => (v == null ? dash : `0x${v.toString(16).toUpperCase().padStart(w, '0')}`);
+const val = (v, digits) => (v == null || Number.isNaN(v) ? DASH : (digits == null ? String(v) : Number(v).toFixed(digits)));
+const hexv = (v, w = 4) => (v == null ? DASH : `0x${v.toString(16).toUpperCase().padStart(w, '0')}`);
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 function kv(rows) {
   return rows.map(([k, v, cls]) => `<dt>${esc(k)}</dt><dd class="${cls || ''}">${esc(v)}</dd>`).join('');
@@ -33,7 +39,7 @@ function kv(rows) {
 
 function tile(label, value, unit, raw, cls = '') {
   return `<div class="tile ${cls}"><div class="k">${esc(label)}</div>`
-    + `<div class="v">${esc(value)}${unit && value !== dash ? `<small>${esc(unit)}</small>` : ''}</div>`
+    + `<div class="v">${esc(value)}${unit && value !== DASH ? `<small>${esc(unit)}</small>` : ''}</div>`
     + `${raw != null ? `<div class="r">${esc(raw)}</div>` : ''}</div>`;
 }
 
@@ -67,9 +73,9 @@ async function onConnectClick() {
     await startLink();
   } catch (err) {
     if (err?.name !== 'NotFoundError') {                    // NotFoundError = chooser cancelled
-      showBanner(`Không kết nối được: <code>${esc(describeError(err))}</code><br>`
-        + 'Thử: tắt/bật Bluetooth trên điện thoại, kiểm tra datalogger không đang nối với máy khác (APK, PC), '
-        + 'hoặc bật tuỳ chọn <b>Hiện mọi thiết bị BLE</b> rồi kết nối lại.');
+      showBanner(`Connection failed: <code>${esc(describeError(err))}</code><br>`
+        + 'Try: turn Bluetooth off and on, make sure the datalogger is not connected to another device '
+        + '(APK, PC tool), or enable <b>Show all BLE devices</b> and connect again.');
       console.error(err);
     }
   }
@@ -110,27 +116,28 @@ async function startSession() {
   ui.session = s;
   s.addEventListener('update', queueRender);
   s.addEventListener('log', onLog);
-  setStatus('Đang bắt tay…', 'busy');
+  setStatus('Handshaking…', 'busy');
   try {
     await s.start();
-    setStatus(`${ui.link.name || 'Đã kết nối'}${ui.demo ? ' (demo)' : ''}`, 'on');
+    setStatus(`${ui.link.name || 'Connected'}${ui.demo ? ' (demo)' : ''}`, 'on');
     $('empty').hidden = true;
     $('view').hidden = false;
     queueRender();
   } catch (err) {
-    setStatus('Lỗi giao tiếp', 'busy');
-    showBanner(`Thiết bị không trả lời: <code>${esc(describeError(err))}</code>. Kiểm tra datalogger đang bật và thử kết nối lại.`);
+    setStatus('No response', 'busy');
+    showBanner(`The device does not answer: <code>${esc(describeError(err))}</code>. `
+      + 'Check that the datalogger is powered and connect again.');
   }
 }
 
 function onLinkState(e) {
   const st = e.detail;
-  $('btnConnect').textContent = st === 'disconnected' ? 'Kết nối' : 'Ngắt';
+  $('btnConnect').textContent = st === 'disconnected' ? 'Connect' : 'Disconnect';
   if (st === 'connecting') {
-    setStatus('Đang kết nối…', 'busy');
+    setStatus('Connecting…', 'busy');
   } else if (st === 'disconnected') {
     ui.session?.stop();
-    setStatus('Chưa kết nối', 'off');
+    setStatus('Not connected', 'off');
     if (ui.wanted && !ui.demo && !ui.reconnecting) {
       reconnect().finally(() => { ui.reconnecting = false; });
     }
@@ -140,8 +147,8 @@ function onLinkState(e) {
 async function reconnect() {
   ui.reconnecting = true;
   for (let i = 1; i <= RECONNECT_TRIES && ui.wanted; i++) {
-    setStatus(`Kết nối lại ${i}/${RECONNECT_TRIES}…`, 'busy');
-    await new Promise((r) => setTimeout(r, 1500));
+    setStatus(`Reconnecting ${i}/${RECONNECT_TRIES}…`, 'busy');
+    await sleep(RECONNECT_DELAY_MS);
     if (!ui.wanted) {
       return;
     }
@@ -155,19 +162,18 @@ async function reconnect() {
   }
   if (ui.wanted) {
     ui.wanted = false;
-    setStatus('Mất kết nối', 'off');
-    showBanner('Mất kết nối với thiết bị. Bấm <b>Kết nối</b> để chọn lại.');
+    setStatus('Connection lost', 'off');
+    showBanner('Connection to the device lost. Press <b>Connect</b> to choose it again.');
   }
 }
 
 function noBluetoothText() {
   if (!window.isSecureContext) {
-    return 'Trang phải mở qua <b>https://</b> (hoặc <code>http://localhost</code>) thì trình duyệt mới cho dùng Bluetooth.';
+    return 'The page must be opened over <b>https://</b> (or <code>http://localhost</code>) for the browser to allow Bluetooth.';
   }
-  const ios = /iPhone|iPad|iPod/.test(navigator.userAgent);
-  return ios
-    ? 'Safari trên iPhone/iPad không hỗ trợ Web Bluetooth. Mở trang này bằng app <b>Bluefy</b> (App Store).'
-    : 'Trình duyệt này không hỗ trợ Web Bluetooth. Dùng <b>Chrome</b> hoặc <b>Edge</b> (Android, Windows, macOS). Vẫn có thể bấm <b>Demo</b>.';
+  return /iPhone|iPad|iPod/.test(navigator.userAgent)
+    ? 'Safari on iPhone / iPad does not support Web Bluetooth. Open this page in the <b>Bluefy</b> app (App Store).'
+    : 'This browser does not support Web Bluetooth. Use <b>Chrome</b> or <b>Edge</b> (Android, Windows, macOS). <b>Demo</b> still works.';
 }
 
 /* ------------------------------------------------------------------ render */
@@ -190,15 +196,15 @@ function render() {
   const p = m.pcba[ui.pcba];
   const v = pcbaView(p.regs);
   renderRun(v);
-  renderInfo(v, p);
+  renderInfo(v);
   renderFaults(v, p);
   renderProtect(v);
   renderGpio(v);
   renderTemp(m);
   renderBms(m);
-  renderDl(m);
+  renderDatalogger(m);
   renderAges();
-  $('stats').textContent = `rx ${m.stats.rx} · tx ${m.stats.tx} · multi ${m.stats.multi} · CRC lỗi ${m.stats.crc}`;
+  $('stats').textContent = `rx ${m.stats.rx} · tx ${m.stats.tx} · multi ${m.stats.multi} · CRC errors ${m.stats.crc}`;
 }
 
 function renderTabs(m) {
@@ -207,7 +213,8 @@ function renderTabs(m) {
     ui.pcba = ids[0];
   }
   const html = ids.length > 1
-    ? ids.map((i) => `<button type="button" class="btn btn-small ${i === ui.pcba ? 'on' : ''}" data-pcba="${i}">PCBA ${i} · ${hexv(mapIdToTargetId(i), 2)}</button>`).join('')
+    ? ids.map((i) => `<button type="button" class="btn btn-small ${i === ui.pcba ? 'on' : ''}" data-pcba="${i}">`
+      + `PCBA ${i} · ${hexv(mapIdToTargetId(i), 2)}</button>`).join('')
     : '';
   const tabs = $('tabs');
   if (tabs.innerHTML !== html) {
@@ -218,22 +225,23 @@ function renderTabs(m) {
 
 function renderRun(v) {
   const r = v.run;
-  const fault = r.errorCode != null && r.errorCode !== 0;
+  const raw = (prefix, x) => (x != null ? `${prefix} ${x}` : null);
+  const smClass = r.sm === 'FAULT' ? 'bad' : (r.sm === 'RUN' ? 'ok' : '');
   $('tiles').innerHTML = [
-    tile('Current', val(r.currentA, 1), 'A', r.currentRaw != null ? `AD ${r.currentRaw}` : null),
-    tile('Voltage', val(r.voltageV, 1), 'V', r.voltageRaw != null ? `AD ${r.voltageRaw}` : null),
+    tile('Current', val(r.currentA, 1), 'A', raw('AD', r.currentRaw)),
+    tile('Voltage', val(r.voltageV, 1), 'V', raw('AD', r.voltageRaw)),
     tile('Power', val(r.powerW, 0), 'W', 'V × I'),
-    tile('Temperature', val(r.tempC, 1), '°C', r.tempRaw != null ? `AD ${r.tempRaw}` : null),
+    tile('Temperature', val(r.tempC, 1), '°C', raw('AD', r.tempRaw)),
     tile('Speed', val(r.rpm), 'RPM'),
-    tile('Duty', val(r.dutyPct), '%', r.dutyRaw != null ? `raw ${r.dutyRaw}` : null),
-    tile('ADC Pot', val(r.potPct), '%', r.potRaw != null ? `raw ${r.potRaw}` : null),
-    tile('Motor_SM', r.sm ?? dash, '', r.smRaw != null ? `raw ${r.smRaw}` : null, r.sm === 'FAULT' ? 'bad' : (r.sm === 'RUN' ? 'ok' : '')),
-    tile('FaultCode', r.errorCode == null ? dash : hexv(r.errorCode, 2), '', null, fault ? 'bad' : ''),
+    tile('Duty', val(r.dutyPct), '%', raw('raw', r.dutyRaw)),
+    tile('ADC Pot', val(r.potPct), '%', raw('raw', r.potRaw)),
+    tile('Motor_SM', r.sm ?? DASH, '', raw('raw', r.smRaw), smClass),
+    tile('FaultCode', r.errorCode == null ? DASH : hexv(r.errorCode, 2), '', null, r.errorCode ? 'bad' : ''),
     tile('Motor Direction', val(r.dir), ''),
   ].join('');
 }
 
-function renderInfo(v, p) {
+function renderInfo(v) {
   const i = v.info;
   $('toolInfo').innerHTML = kv([
     ['PartNumber', val(i.pn)],
@@ -241,52 +249,54 @@ function renderInfo(v, p) {
     ['FW PartNumber', val(i.fwPn)],
     ['Protocol Version', val(i.protocolVersion)],
     ['FW Mode', val(i.fwMode)],
-    ['Tool Voltage Kind', i.volType == null ? dash : `${i.volType} V`],
+    ['Tool Voltage Kind', i.volType == null ? DASH : `${i.volType} V`],
     ['Tools Num', val(i.toolsNum)],
     ['Target ID', hexv(mapIdToTargetId(ui.pcba), 2)],
     ['MCU_UID', val(i.uid), 'mono'],
     ['Full Duty Value', val(i.fullDuty)],
     ['Current ADC Offset', val(i.currentOffset)],
-    ['OP Gain / Shunt', i.opGain == null ? dash : `${i.opGain} / ${i.shunt}`],
+    ['OP Gain / Shunt', i.opGain == null ? DASH : `${i.opGain} / ${i.shunt}`],
     ['Voltage Divider', val(i.volDiv)],
-    ['NTC Type / Div R', i.ntcType == null ? dash : `${i.ntcType} / ${i.ntcDivR}`],
+    ['NTC Type / Div R', i.ntcType == null ? DASH : `${i.ntcType} / ${i.ntcDivR}`],
   ]);
 }
 
 function renderFaults(v, p) {
   const h = p.hist;
   $('faults').innerHTML = kv([
-    ['FaultCode (now)', v.run.errorCode == null ? dash : hexv(v.run.errorCode, 2), 'mono'],
-    ...[0, 1, 2, 3].map((k) => [`History Error Code${k + 1}`, h ? hexv(h.bytes[k], 2) : dash, 'mono']),
-    ['History (u32)', h ? hexv(h.code, 8) : dash, 'mono'],
+    ['FaultCode (now)', v.run.errorCode == null ? DASH : hexv(v.run.errorCode, 2), 'mono'],
+    ...[0, 1, 2, 3].map((k) => [`History Error Code${k + 1}`, h ? hexv(h.bytes[k], 2) : DASH, 'mono']),
+    ['History (u32)', h ? hexv(h.code, 8) : DASH, 'mono'],
   ]);
 }
 
 function renderProtect(v) {
   const rows = v.protect.map((x) => {
-    const off = x.en === 0;
-    return `<tr><td>${esc(x.name)}</td><td class="${off ? 'off' : ''}">${x.en == null ? dash : (x.en ? 'ON' : 'OFF')}</td>`
-      + `<td class="${off ? 'off' : ''}">${val(x.value)}</td><td class="${off ? 'off' : ''}">${val(x.time)}</td></tr>`;
+    const off = x.en === 0 ? 'off' : '';
+    return `<tr><td>${esc(x.name)}</td><td class="${off}">${x.en == null ? DASH : (x.en ? 'ON' : 'OFF')}</td>`
+      + `<td class="${off}">${val(x.value)}</td><td class="${off}">${val(x.time)}</td></tr>`;
   }).join('');
-  $('protect').innerHTML = `<thead><tr><th>Bảo vệ</th><th>Enable</th><th>Value</th><th>Time</th></tr></thead><tbody>${rows}</tbody>`;
+  $('protect').innerHTML = '<thead><tr><th>Protection</th><th>Enable</th><th>Value</th><th>Time</th></tr></thead>'
+    + `<tbody>${rows}</tbody>`;
 }
 
 function renderGpio(v) {
   $('gpio').innerHTML = '<thead><tr><th>Port</th><th>IN (IDR)</th><th>OUT (ODR)</th></tr></thead><tbody>'
-    + v.gpio.map((g) => `<tr><td>GPIO${g.port}</td><td class="mono">${g.in ?? dash}</td><td class="mono">${g.out ?? dash}</td></tr>`).join('')
+    + v.gpio.map((g) => `<tr><td>GPIO${g.port}</td><td class="mono">${g.in ?? DASH}</td><td class="mono">${g.out ?? DASH}</td></tr>`).join('')
     + '</tbody>';
-  const s16 = (x) => (x == null ? dash : `${x} (${x & 0x8000 ? x - 0x10000 : x})`);
+  const withSigned = (x) => (x == null ? DASH : `${x} (${x & 0x8000 ? x - 0x10000 : x})`);
   $('debug').innerHTML = kv([
-    ['Debug Data1', s16(v.run.debug1)],
-    ['Debug Data2', s16(v.run.debug2)],
+    ['Debug Data1', withSigned(v.run.debug1)],
+    ['Debug Data2', withSigned(v.run.debug2)],
   ]);
 }
 
 function renderTemp(m) {
   if (!m.temp) {
-    $('temp').innerHTML = `<p class="muted">Chưa nhận dữ liệu nhiệt độ.</p>`;
+    $('temp').innerHTML = '<p class="muted">No temperature data yet.</p>';
     return;
   }
+  // CH0 is logged in mV by the firmware (uV / 1000), CH1..5 in degC
   $('temp').innerHTML = m.temp.map((c, i) => (i === 0
     ? tile('CH0', val(c.uV / 1000, 3), 'mV', `${c.uV} µV`)
     : tile(`CH${i}`, c.burnout ? 'burnout' : val(c.tempX10 / 10, 1), c.burnout ? '' : '°C', `${c.uV} µV`, c.burnout ? 'bad' : ''))).join('');
@@ -299,7 +309,7 @@ function renderBms(m) {
       ['SOC', `${val(b.socPct, 1)} %`],
       ['Voltage', `${val(b.voltageV, 1)} V`],
       ['Current', `${val(b.currentA, 1)} A`],
-      ['Cell temp', `${b.cellTempLog}  (raw ${b.cellTemp} − 300, như log SD)`],
+      ['Cell temp', `${b.cellTempLog}  (raw ${b.cellTemp} − 300, as in the SD log)`],
       ['Warning state', hexv(b.warning), 'mono'],
       ['Charge / Discharge', `${hexv(b.charge, 2)} / ${hexv(b.discharge, 2)}`, 'mono'],
       ['HW PN / version', `${b.hwPn} / ${b.hwMajor}.${b.hwMinor}`],
@@ -316,21 +326,21 @@ function renderBms(m) {
       ['FW / HW', `${b.fw} / V${b.hw}`],
     ]);
   } else {
-    $('bms').innerHTML = `<dt>Pin</dt><dd class="muted">Chưa nhận dữ liệu pin.</dd>`;
+    $('bms').innerHTML = '<dt>Battery</dt><dd class="muted">No battery data yet.</dd>';
   }
 }
 
-function renderDl(m) {
+function renderDatalogger(m) {
   const i = m.info;
   $('dl').innerHTML = kv([
-    ['FW Version', i ? `V${i.fwVersion}` : dash],
-    ['Protocol Version', i ? i.protocolVersion : (m.handshake?.protocolVersion ?? dash)],
-    ['MCU_UID', i ? i.uid : dash, 'mono'],
-    ['Tool Bootloader', i ? (i.toolBootMode ? 'Boot mode' : 'Normal') : dash],
+    ['FW Version', i ? `V${i.fwVersion}` : DASH],
+    ['Protocol Version', i ? i.protocolVersion : (m.handshake?.protocolVersion ?? DASH)],
+    ['MCU_UID', i ? i.uid : DASH, 'mono'],
+    ['Tool Bootloader', i ? (i.toolBootMode ? 'Boot mode' : 'Normal') : DASH],
     ['PayLoad Size', val(m.payloadSize)],
-    ['Bus Voltage', m.selfVI ? `${val(m.selfVI.vX10 / 10, 1)} V` : dash],
-    ['Bus Current', m.selfVI ? `${val(m.selfVI.iX10 / 10, 1)} A` : dash],
-    ['BLE', ui.link?.name || dash],
+    ['Bus Voltage', m.selfVI ? `${val(m.selfVI.vX10 / 10, 1)} V` : DASH],
+    ['Bus Current', m.selfVI ? `${val(m.selfVI.iX10 / 10, 1)} A` : DASH],
+    ['BLE', ui.link?.name || DASH],
   ]);
 }
 
@@ -340,25 +350,25 @@ function renderAges() {
     return;
   }
   const p = m.pcba[ui.pcba];
-  const t = {
+  const seen = {
     run: p.seen.run, info: p.seen.info, protect: p.seen.protect, hist: p.seen.hist,
     temp: m.seen.temp, bms: m.seen.bms, dl: Math.max(m.seen.info, m.seen.selfVI),
   };
   const now = Date.now();
   document.querySelectorAll('[data-age]').forEach((el) => {
-    const ts = t[el.dataset.age];
+    const ts = seen[el.dataset.age];
     if (!ts) {
-      el.textContent = 'chưa có';
+      el.textContent = 'no data';
       el.classList.remove('stale');
       return;
     }
     const s = Math.round((now - ts) / 1000);
-    el.textContent = s < 1 ? 'vừa xong' : `${s} s trước`;
+    el.textContent = s < 1 ? 'just now' : `${s} s ago`;
     el.classList.toggle('stale', el.dataset.age === 'run' && now - ts > STALE_MS);
   });
 }
 
-/* ------------------------------------------------------------------ log */
+/* ------------------------------------------------------------------ frame log */
 function onLog(e) {
   if (ui.logPaused || !$('logBox').open) {
     return;
@@ -369,64 +379,66 @@ function onLog(e) {
   line.textContent = `${new Date(t).toISOString().slice(11, 23)} ${kind.toUpperCase().padEnd(3)} ${text}`;
   const log = $('log');
   log.appendChild(line);
-  while (log.childElementCount > 300) {
+  while (log.childElementCount > LOG_LINES) {
     log.firstChild.remove();
   }
   log.scrollTop = log.scrollHeight;
 }
 
 async function copyLog() {
+  const btn = $('btnCopyLog');
   const text = (ui.session?.log || [])
     .map((x) => `${new Date(x.t).toISOString()} ${x.kind} ${x.text}`).join('\n');
   try {
     await navigator.clipboard.writeText(text);
-    $('btnCopyLog').textContent = 'Đã copy';
+    btn.textContent = 'Copied';
   } catch {
-    $('btnCopyLog').textContent = 'Không copy được';
+    btn.textContent = 'Copy failed';
   }
-  setTimeout(() => { $('btnCopyLog').textContent = 'Copy'; }, 1500);
+  setTimeout(() => { btn.textContent = 'Copy'; }, 1500);
 }
 
 /* ------------------------------------------------------------------ PWA */
-function setupPwa() {
-  $('ver').textContent = `v${self.APP_VERSION}`;
-  const net = () => { $('net').textContent = navigator.onLine ? 'online' : 'offline'; };
-  window.addEventListener('online', net);
-  window.addEventListener('offline', net);
-  net();
+function setupNetworkStatus() {
+  const show = () => { $('net').textContent = navigator.onLine ? 'online' : 'offline'; };
+  window.addEventListener('online', show);
+  window.addEventListener('offline', show);
+  show();
+}
 
-  const offline = $('offline');
-  if (!('serviceWorker' in navigator) || !window.caches) {
-    offline.textContent = 'trình duyệt không hỗ trợ lưu offline';
-    return;
-  }
-  offline.textContent = 'đang lưu offline…';
-  const checkSaved = async () => {
-    try {
-      const has = (await caches.keys()).includes(`dl-ble-monitor-${self.APP_VERSION}`);
-      offline.textContent = has ? '✓ đã lưu offline' : 'đang lưu offline…';
-      return has;
-    } catch {
-      offline.textContent = 'không lưu offline được';
-      return true;
-    }
-  };
-  let swReady = false;
+/** Shows whether the offline copy of this version is in the cache. */
+function watchOfflineCache() {
+  const label = $('offline');
+  let ready = false;
+  label.textContent = 'saving for offline…';
   navigator.serviceWorker.ready.then(async () => {
-    swReady = true;
-    for (let i = 0; i < 20 && !(await checkSaved()); i++) {
-      await new Promise((r) => setTimeout(r, 500));
+    ready = true;
+    for (let i = 0; i < 20; i++) {
+      try {
+        if ((await caches.keys()).includes(CACHE_PREFIX + self.APP_VERSION)) {
+          label.textContent = '✓ available offline';
+          return;
+        }
+      } catch {
+        break;
+      }
+      await sleep(500);
     }
+    label.textContent = '✗ not saved for offline';
   });
   setTimeout(() => {
-    if (!swReady) {
-      offline.textContent = '✗ chưa lưu offline được (trình duyệt có thể không hỗ trợ)';
+    if (!ready) {
+      label.textContent = '✗ not saved for offline (browser may not support it)';
     }
-  }, 15000);
+  }, SW_READY_TIMEOUT_MS);
+}
+
+/** Registers sw.js and offers "reload" when a new version is installed. */
+function registerServiceWorker() {
   navigator.serviceWorker.register('sw.js').then((reg) => {
-    const offer = (w) => {
+    const offer = (worker) => {
       $('update').hidden = false;
-      $('btnReload').onclick = () => w.postMessage('skipWaiting');
+      $('btnReload').onclick = () => worker.postMessage('skipWaiting');
     };
     if (reg.waiting && navigator.serviceWorker.controller) {
       offer(reg.waiting);
@@ -441,7 +453,7 @@ function setupPwa() {
     });
     setInterval(() => reg.update().catch(() => {}), 60000);
   }).catch(() => {
-    offline.textContent = 'không lưu offline được';
+    $('offline').textContent = '✗ not saved for offline';
   });
 
   let reloading = false;
@@ -451,6 +463,17 @@ function setupPwa() {
       location.reload();
     }
   });
+}
+
+function setupPwa() {
+  $('ver').textContent = `v${self.APP_VERSION}`;
+  setupNetworkStatus();
+  if (!('serviceWorker' in navigator) || !window.caches) {
+    $('offline').textContent = 'offline not supported by this browser';
+    return;
+  }
+  watchOfflineCache();
+  registerServiceWorker();
 }
 
 /* ------------------------------------------------------------------ init */

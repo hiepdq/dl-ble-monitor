@@ -5,6 +5,7 @@
  *
  * Events: 'data' (detail: Uint8Array), 'state' (detail: 'connecting'|'connected'|'disconnected').
  */
+
 /* Full 128-bit strings: some iOS WebKit based browsers (Bluefy) do not accept the numeric
  * 16-bit aliases that Chrome takes. */
 const uuid128 = (short) => `0000${short}-0000-1000-8000-00805f9b34fb`;
@@ -55,7 +56,7 @@ export class BleLink extends EventTarget {
     const opts = showAll
       ? { acceptAllDevices: true, optionalServices: [SERVICE_UUID] }
       : { filters: [{ namePrefix: NAME_PREFIX }], optionalServices: [SERVICE_UUID] };
-    const device = await step('chọn thiết bị', navigator.bluetooth.requestDevice(opts));
+    const device = await step('choose device', navigator.bluetooth.requestDevice(opts));
     if (this.device && this.device !== device) {
       this.device.removeEventListener('gattserverdisconnected', this.onDisconnect);
     }
@@ -71,22 +72,22 @@ export class BleLink extends EventTarget {
     }
     this.emit('state', 'connecting');
     try {
-      const server = await step('kết nối GATT', this.device.gatt.connect());
-      const service = await step('tìm service FFF0', server.getPrimaryService(SERVICE_UUID));
+      const server = await step('GATT connect', this.device.gatt.connect());
+      const service = await step('find service FFF0', server.getPrimaryService(SERVICE_UUID));
       // direct lookup first (what the APK uses), scan by properties only as a fallback
       this.rx = await service.getCharacteristic(RX_UUID).catch(() => null);
       this.tx = await service.getCharacteristic(TX_UUID).catch(() => null);
       if (!this.rx || !this.tx) {
-        const chars = await step('đọc characteristic', service.getCharacteristics());
-        const p = (c) => c.properties || {};
-        this.rx = this.rx || chars.find((c) => p(c).notify || p(c).indicate) || null;
-        this.tx = this.tx || chars.find((c) => p(c).write || p(c).writeWithoutResponse) || null;
+        const chars = await step('list characteristics', service.getCharacteristics());
+        const props = (c) => c.properties || {};
+        this.rx = this.rx || chars.find((c) => props(c).notify || props(c).indicate) || null;
+        this.tx = this.tx || chars.find((c) => props(c).write || props(c).writeWithoutResponse) || null;
       }
       if (!this.rx || !this.tx) {
-        throw new Error('[tìm characteristic] không thấy FFF1 (notify) / FFF2 (write)');
+        throw new Error('[find characteristics] FFF1 (notify) / FFF2 (write) not found');
       }
       this.rx.addEventListener('characteristicvaluechanged', this.onNotify);
-      await step('bật notify FFF1', this.rx.startNotifications());
+      await step('enable notify FFF1', this.rx.startNotifications());
       this.emit('state', 'connected');
     } catch (err) {
       this.rx = null;

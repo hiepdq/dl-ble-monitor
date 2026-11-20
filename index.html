@@ -1,10 +1,10 @@
 <!doctype html>
-<html lang="vi">
+<html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>Datalogger BLE Monitor</title>
-  <meta name="description" content="Xem giá trị Datalogger RYOBI qua Bluetooth LE">
+  <meta name="description" content="Live values of the RYOBI datalogger over Bluetooth LE">
   <meta name="theme-color" content="#0f1720">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="mobile-web-app-capable" content="yes">
@@ -27,48 +27,48 @@
       </div>
     </div>
     <div class="conn">
-      <span id="status" class="pill pill-off">Chưa kết nối</span>
-      <button id="btnConnect" class="btn btn-primary" type="button">Kết nối</button>
+      <span id="status" class="pill pill-off">Not connected</span>
+      <button id="btnConnect" class="btn btn-primary" type="button">Connect</button>
     </div>
   </header>
 
   <div id="banner" class="banner" hidden></div>
   <div id="update" class="banner banner-info" hidden>
-    Có bản mới. <button id="btnReload" class="btn btn-small" type="button">Tải lại</button>
+    A new version is available. <button id="btnReload" class="btn btn-small" type="button">Reload</button>
   </div>
 
   <main id="main">
     <section class="card" id="empty">
-      <h2>Bắt đầu</h2>
-      <p>Bấm <b>Kết nối</b> rồi chọn thiết bị <code>Debugger-xxxx</code>. Trang chỉ đọc và hiển thị giá trị,
-        không thay đổi cấu hình thiết bị.</p>
-      <p>Chưa có thiết bị? Bấm <b>Demo</b> để xem giao diện với thiết bị giả lập.</p>
+      <h2>Getting started</h2>
+      <p>Press <b>Connect</b> and choose the <code>Debugger-xxxx</code> device. This page only reads and
+        displays values, it never changes the device configuration.</p>
+      <p>No device at hand? Press <b>Demo</b> to try the interface with a simulated datalogger.</p>
       <div class="row">
         <button id="btnDemo" class="btn" type="button">Demo</button>
       </div>
       <details class="opts">
-        <summary>Tuỳ chọn</summary>
-        <label><input type="checkbox" id="optAll"> Hiện mọi thiết bị BLE khi chọn (nếu không thấy <code>Debugger-xxxx</code>)</label>
-        <label><input type="checkbox" id="optTime"> Đồng bộ giờ điện thoại vào RTC của datalogger khi kết nối</label>
+        <summary>Options</summary>
+        <label><input type="checkbox" id="optAll"> Show all BLE devices in the chooser (if <code>Debugger-xxxx</code> does not appear)</label>
+        <label><input type="checkbox" id="optTime"> Set the datalogger RTC to the phone time on connect</label>
       </details>
     </section>
 
     <div id="view" hidden>
       <nav id="tabs" class="tabs" aria-label="PCBA"></nav>
       <section class="card">
-        <div class="card-h"><h2>Tool đang chạy</h2><span class="age" data-age="run"></span></div>
+        <div class="card-h"><h2>Tool running</h2><span class="age" data-age="run"></span></div>
         <div id="tiles" class="tiles"></div>
       </section>
       <section class="card">
-        <div class="card-h"><h2>Thông tin tool</h2><span class="age" data-age="info"></span></div>
+        <div class="card-h"><h2>Tool info</h2><span class="age" data-age="info"></span></div>
         <dl id="toolInfo" class="kv"></dl>
       </section>
       <section class="card">
-        <div class="card-h"><h2>Mã lỗi</h2><span class="age" data-age="hist"></span></div>
+        <div class="card-h"><h2>Fault codes</h2><span class="age" data-age="hist"></span></div>
         <dl id="faults" class="kv"></dl>
       </section>
       <section class="card">
-        <div class="card-h"><h2>Bảo vệ</h2><span class="age" data-age="protect"></span></div>
+        <div class="card-h"><h2>Protections</h2><span class="age" data-age="protect"></span></div>
         <div class="tbl-wrap"><table id="protect" class="tbl"></table></div>
       </section>
       <section class="card">
@@ -77,11 +77,11 @@
         <dl id="debug" class="kv"></dl>
       </section>
       <section class="card">
-        <div class="card-h"><h2>Nhiệt độ (thermocouple)</h2><span class="age" data-age="temp"></span></div>
+        <div class="card-h"><h2>Temperature (thermocouple)</h2><span class="age" data-age="temp"></span></div>
         <div id="temp" class="tiles tiles-sm"></div>
       </section>
       <section class="card">
-        <div class="card-h"><h2>Pin</h2><span class="age" data-age="bms"></span></div>
+        <div class="card-h"><h2>Battery</h2><span class="age" data-age="bms"></span></div>
         <dl id="bms" class="kv"></dl>
       </section>
       <section class="card">
@@ -90,10 +90,10 @@
       </section>
       <section class="card">
         <details id="logBox">
-          <summary>Nhật ký khung dữ liệu <span id="stats" class="muted"></span></summary>
+          <summary>Frame log <span id="stats" class="muted"></span></summary>
           <div class="row">
             <button id="btnCopyLog" class="btn btn-small" type="button">Copy</button>
-            <label class="muted"><input type="checkbox" id="optPause"> Tạm dừng</label>
+            <label class="muted"><input type="checkbox" id="optPause"> Pause</label>
           </div>
           <pre id="log" class="log"></pre>
         </details>
