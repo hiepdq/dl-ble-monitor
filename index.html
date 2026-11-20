@@ -50,6 +50,13 @@
         <summary>Options</summary>
         <label><input type="checkbox" id="optAll"> Show all BLE devices in the chooser (if <code>Debugger-xxxx</code> does not appear)</label>
         <label><input type="checkbox" id="optTime"> Set the datalogger RTC to the phone time on connect</label>
+        <label>Protocol
+          <select id="optProto">
+            <option value="auto" selected>Auto (new protocol, else legacy)</option>
+            <option value="new">New protocol (datalogger FW V5.x)</option>
+            <option value="legacy">Legacy 20-byte (FW V4.x, old APK)</option>
+          </select>
+        </label>
       </details>
     </section>
 
@@ -76,11 +83,11 @@
         <div class="tbl-wrap"><table id="gpio" class="tbl"></table></div>
         <dl id="debug" class="kv"></dl>
       </section>
-      <section class="card">
+      <section class="card" id="cardTemp">
         <div class="card-h"><h2>Temperature (thermocouple)</h2><span class="age" data-age="temp"></span></div>
         <div id="temp" class="tiles tiles-sm"></div>
       </section>
-      <section class="card">
+      <section class="card" id="cardBms">
         <div class="card-h"><h2>Battery</h2><span class="age" data-age="bms"></span></div>
         <dl id="bms" class="kv"></dl>
       </section>

@@ -16,6 +16,7 @@ const FILES = [
   './js/app.js',
   './js/ble.js',
   './js/decode.js',
+  './js/legacy.js',
   './js/protocol.js',
   './js/session.js',
   './js/sim.js',

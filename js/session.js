@@ -47,10 +47,11 @@ export function emptyModel() {
 }
 
 export class Session extends EventTarget {
-  constructor(transport, { syncTime = false } = {}) {
+  constructor(transport, { syncTime = false, handshakeTries = 3 } = {}) {
     super();
     this.t = transport;
     this.syncTime = syncTime;
+    this.handshakeTries = handshakeTries;
     this.parser = new FrameParser();
     this.multi = new MultiAssembler();
     this.model = emptyModel();
@@ -78,7 +79,13 @@ export class Session extends EventTarget {
     this.multi.reset();
     this.running = true;
 
-    const hs = await this.ask(OP.HANDSHAKE, [], 3);
+    let hs;
+    try {
+      hs = await this.ask(OP.HANDSHAKE, [], this.handshakeTries);
+    } catch (err) {
+      err.noHandshake = true;           // lets the caller fall back to the legacy protocol
+      throw err;
+    }
     this.model.handshake = decodeHandshake(hs.data);
 
     const mp = await this.ask(OP.MAX_PAYLOAD, [WANTED_PAYLOAD], 3);

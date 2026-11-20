@@ -4,7 +4,8 @@
 import { BleLink, bluetoothAvailable, describeError } from './ble.js';
 import { SimLink } from './sim.js';
 import { Session } from './session.js';
-import { mapIdToTargetId, pcbaView } from './decode.js';
+import { LegacySession } from './legacy.js';
+import { MAX_PCBAS, REG, mapIdToTargetId, pcbaView } from './decode.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -110,24 +111,52 @@ async function startLink() {
   await startSession();
 }
 
+/**
+ * Protocol choice (Options): 'auto' tries the new protocol (datalogger FW V5.x) and falls back to
+ * the legacy 20-byte protocol (FW V4.x) when the HANDSHAKE gets no answer.
+ */
 async function startSession() {
-  ui.session?.dispose();
-  const s = new Session(ui.link, { syncTime: $('optTime').checked && !ui.demo });
-  ui.session = s;
-  s.addEventListener('update', queueRender);
-  s.addEventListener('log', onLog);
+  const proto = ui.demo ? 'new' : $('optProto').value;
+  const syncTime = $('optTime').checked && !ui.demo;
   setStatus('Handshaking…', 'busy');
   try {
-    await s.start();
-    setStatus(`${ui.link.name || 'Connected'}${ui.demo ? ' (demo)' : ''}`, 'on');
+    if (proto === 'legacy') {
+      await attach(new LegacySession(ui.link, { syncTime }));
+    } else {
+      try {
+        await attach(new Session(ui.link, { syncTime, handshakeTries: proto === 'auto' ? 2 : 3 }));
+      } catch (err) {
+        if (proto !== 'auto' || !err.noHandshake || !ui.link.connected) {
+          throw err;
+        }
+        setStatus('Trying legacy protocol…', 'busy');
+        await attach(new LegacySession(ui.link, { syncTime }),
+          'no answer to HANDSHAKE (0x001): using the legacy 20-byte protocol (FW V4.x)');
+      }
+    }
+    const tag = ui.demo ? ' (demo)' : (ui.session.legacy ? ' (legacy)' : '');
+    setStatus(`${ui.link.name || 'Connected'}${tag}`, 'on');
     $('empty').hidden = true;
     $('view').hidden = false;
     queueRender();
   } catch (err) {
     setStatus('No response', 'busy');
     showBanner(`The device does not answer: <code>${esc(describeError(err))}</code>. `
-      + 'Check that the datalogger is powered and connect again.');
+      + 'Check that the datalogger is powered and connect again, or choose the protocol in <b>Options</b>.');
   }
+}
+
+/** Replaces the current session with `s` and starts it (throws when the device does not answer). */
+async function attach(s, note) {
+  ui.session?.dispose();
+  ui.session = s;
+  ui.pcba = 0;
+  s.addEventListener('update', queueRender);
+  s.addEventListener('log', onLog);
+  if (note) {
+    s.addLog('err', note);
+  }
+  await s.start();
 }
 
 function onLinkState(e) {
@@ -193,6 +222,9 @@ function render() {
     return;
   }
   renderTabs(m);
+  // the legacy protocol carries tool registers only
+  $('cardTemp').hidden = !!m.legacy;
+  $('cardBms').hidden = !!m.legacy;
   const p = m.pcba[ui.pcba];
   const v = pcbaView(p.regs);
   renderRun(v);
@@ -207,10 +239,19 @@ function render() {
   $('stats').textContent = `rx ${m.stats.rx} · tx ${m.stats.tx} · multi ${m.stats.multi} · CRC errors ${m.stats.crc}`;
 }
 
+/** Legacy: one PCBA is polled at a time, so the tabs come from the master's PCBA count (reg 5 high byte). */
+function legacyPcbaIds(m) {
+  const n = Math.min((m.pcba[0].regs[REG.PCBA_NUM] ?? 0) >> 8, MAX_PCBAS);
+  return Array.from({ length: Math.max(n, 1) }, (_, i) => i);
+}
+
 function renderTabs(m) {
-  const ids = m.pcba.map((p, i) => (p.seen.info || p.seen.run ? i : -1)).filter((i) => i >= 0);
+  const ids = m.legacy
+    ? legacyPcbaIds(m)
+    : m.pcba.map((p, i) => (p.seen.info || p.seen.run ? i : -1)).filter((i) => i >= 0);
   if (!ids.includes(ui.pcba) && ids.length) {
     ui.pcba = ids[0];
+    ui.session?.select?.(ui.pcba);
   }
   const html = ids.length > 1
     ? ids.map((i) => `<button type="button" class="btn btn-small ${i === ui.pcba ? 'on' : ''}" data-pcba="${i}">`
@@ -331,6 +372,10 @@ function renderBms(m) {
 }
 
 function renderDatalogger(m) {
+  if (m.legacy) {
+    renderLegacyDatalogger(m.legacy);
+    return;
+  }
   const i = m.info;
   $('dl').innerHTML = kv([
     ['FW Version', i ? `V${i.fwVersion}` : DASH],
@@ -340,6 +385,24 @@ function renderDatalogger(m) {
     ['PayLoad Size', val(m.payloadSize)],
     ['Bus Voltage', m.selfVI ? `${val(m.selfVI.vX10 / 10, 1)} V` : DASH],
     ['Bus Current', m.selfVI ? `${val(m.selfVI.iX10 / 10, 1)} A` : DASH],
+    ['BLE', ui.link?.name || DASH],
+  ]);
+}
+
+/** Status byte of the legacy answer (app_ble.c BLE_Tx_Buff[66]). */
+function renderLegacyDatalogger(L) {
+  const s = L.status;
+  const bit = (n) => (s == null ? null : (s >> n) & 1);
+  const yesNo = (b, yes, no) => (b == null ? DASH : (b ? yes : no));
+  $('dl').innerHTML = kv([
+    ['Protocol', 'Legacy 20-byte (FW V4.x / APK)'],
+    ['FW date', val(L.fwDate)],
+    ['Tool bus', yesNo(bit(0), 'answering', 'no answer'), bit(0) === 0 ? 'bad' : ''],
+    ['Tool Bootloader', yesNo(bit(2), 'Boot mode', 'Normal')],
+    ['TF card', s == null ? DASH : (bit(3) ? (bit(4) ? 'inserted, logging' : 'inserted') : 'not inserted')],
+    ['Polled target ID', hexv(L.busTargetId, 2)],
+    ['Status byte', hexv(s, 2), 'mono'],
+    ['Missed answers', String(L.misses), L.misses ? 'bad' : ''],
     ['BLE', ui.link?.name || DASH],
   ]);
 }
@@ -487,6 +550,7 @@ function init() {
     const b = e.target.closest('[data-pcba]');
     if (b) {
       ui.pcba = Number(b.dataset.pcba);
+      ui.session?.select?.(ui.pcba);        // legacy: poll this PCBA from now on
       render();
     }
   });
