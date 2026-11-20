@@ -13,8 +13,10 @@
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
   <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+  <link rel="stylesheet" href="vendor/uPlot.min.css">
   <link rel="stylesheet" href="css/app.css">
   <script src="version.js"></script>
+  <script src="vendor/uPlot.iife.min.js"></script>
   <script type="module" src="js/app.js"></script>
 </head>
 <body>
@@ -54,7 +56,12 @@
     </section>
 
     <div id="view" hidden>
+      <nav id="pages" class="pages" aria-label="Page">
+        <button type="button" class="on" data-page="Monitor">Monitor</button>
+        <button type="button" data-page="Chart">Chart</button>
+      </nav>
       <nav id="tabs" class="tabs" aria-label="PCBA"></nav>
+      <div id="pageMonitor">
       <section class="card">
         <div class="card-h"><h2>Tool running</h2><span class="age" data-age="run"></span></div>
         <div id="tiles" class="tiles"></div>
@@ -88,6 +95,33 @@
         <div class="card-h"><h2>Datalogger</h2><span class="age" data-age="dl"></span></div>
         <dl id="dl" class="kv"></dl>
       </section>
+      </div>
+
+      <div id="pageChart" hidden>
+        <section class="card chart-ctl">
+          <div class="row">
+            <button id="chStart" class="btn btn-primary" type="button">Start</button>
+            <button id="chStop" class="btn" type="button">Stop</button>
+            <button id="chClear" class="btn" type="button">Clear</button>
+            <button id="chPng" class="btn" type="button">Save PNG</button>
+            <span id="chRec" class="rec muted"></span>
+          </div>
+          <div id="chWindow" class="row seg" aria-label="Time window"></div>
+          <details id="chSignals" class="signals">
+            <summary>Signals <span id="chSigCount" class="muted"></span></summary>
+            <div id="chSigList"></div>
+          </details>
+        </section>
+        <section class="card chart-card">
+          <div id="chValues" class="chart-values" aria-live="off"></div>
+          <p id="chEmpty" class="muted" hidden>Choose at least one signal in <b>Signals</b>.</p>
+          <div id="chCharts" class="charts"></div>
+          <p class="muted small">Drag across a chart to zoom every chart to the same time span;
+            <b>Reset zoom</b> (or a double-click) returns to the live window.
+            Only the selected PCBA is recorded; the last 60 min are kept.</p>
+        </section>
+      </div>
+
       <section class="card">
         <details id="logBox">
           <summary>Frame log <span id="stats" class="muted"></span></summary>

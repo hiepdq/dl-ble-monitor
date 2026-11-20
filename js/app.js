@@ -4,6 +4,7 @@
 import { BleLink, bluetoothAvailable, describeError } from './ble.js';
 import { Session } from './session.js';
 import { LegacySession } from './legacy.js';
+import { ChartPage } from './chart.js';
 import { MAX_PCBAS, REG, mapIdToTargetId, pcbaView } from './decode.js';
 
 const $ = (id) => document.getElementById(id);
@@ -22,6 +23,7 @@ const ui = {
   pcba: 0,
   renderQueued: false,
   logPaused: false,
+  page: 'Monitor',
 };
 
 /* ------------------------------------------------------------------ helpers */
@@ -71,8 +73,10 @@ async function onConnectClick() {
     await startLink();
   } catch (err) {
     if (err?.name !== 'NotFoundError') {                    // NotFoundError = chooser cancelled
+      const retrying = ui.wanted && ui.reconnecting;        // the link dropped: reconnect() is already on it
       showBanner(`Connection failed: <code>${esc(describeError(err))}</code><br>`
-        + 'Try: turn Bluetooth off and on, make sure the datalogger is not connected to another device '
+        + (retrying ? 'Retrying automatically… If it keeps failing: ' : 'Try: ')
+        + 'turn Bluetooth off and on, make sure the datalogger is not connected to another device '
         + '(APK, PC tool), or enable <b>Show all BLE devices</b> and connect again.');
       console.error(err);
     }
@@ -139,6 +143,8 @@ async function startSession() {
     }
     const tag = ui.session.legacy ? ' (legacy)' : '';
     setStatus(`${ui.link.name || 'Connected'}${tag}`, 'on');
+    // a failed first attempt leaves its error up while the automatic reconnect succeeds
+    showBanner('');
     $('empty').hidden = true;
     $('view').hidden = false;
     queueRender();
@@ -153,13 +159,21 @@ async function startSession() {
 async function attach(s, note) {
   ui.session?.dispose();
   ui.session = s;
-  ui.pcba = 0;
-  s.addEventListener('update', queueRender);
+  // a reconnect during a chart recording stays on the recorded PCBA
+  ui.pcba = chart.recording ? chart.rec.mapId : 0;
+  s.addEventListener('update', () => {
+    chart.sample(s.model);
+    queueRender();
+  });
   s.addEventListener('log', onLog);
   if (note) {
     s.addLog('err', note);
   }
+  chart.onSession();
   await s.start();
+  if (ui.pcba) {
+    s.select?.(ui.pcba);
+  }
 }
 
 function onLinkState(e) {
@@ -225,6 +239,10 @@ function render() {
     return;
   }
   renderTabs(m);
+  $('stats').textContent = `rx ${m.stats.rx} · tx ${m.stats.tx} · multi ${m.stats.multi} · CRC errors ${m.stats.crc}`;
+  if (ui.page !== 'Monitor') {
+    return;
+  }
   // the legacy protocol carries tool registers only
   $('cardTemp').hidden = !!m.legacy;
   $('cardBms').hidden = !!m.legacy;
@@ -239,7 +257,6 @@ function render() {
   renderBms(m);
   renderDatalogger(m);
   renderAges();
-  $('stats').textContent = `rx ${m.stats.rx} · tx ${m.stats.tx} · multi ${m.stats.multi} · CRC errors ${m.stats.crc}`;
 }
 
 /** Legacy: one PCBA is polled at a time, so the tabs come from the master's PCBA count (reg 5 high byte). */
@@ -256,8 +273,9 @@ function renderTabs(m) {
     ui.pcba = ids[0];
     ui.session?.select?.(ui.pcba);
   }
+  const lock = chart.recording ? ' disabled title="Stop the chart recording to change PCBA"' : '';
   const html = ids.length > 1
-    ? ids.map((i) => `<button type="button" class="btn btn-small ${i === ui.pcba ? 'on' : ''}" data-pcba="${i}">`
+    ? ids.map((i) => `<button type="button" class="btn btn-small ${i === ui.pcba ? 'on' : ''}" data-pcba="${i}"${lock}>`
       + `PCBA ${i} · ${hexv(mapIdToTargetId(i), 2)}</button>`).join('')
     : '';
   const tabs = $('tabs');
@@ -480,6 +498,25 @@ async function removeOfflineCopy() {
   }
 }
 
+/* ------------------------------------------------------------------ pages */
+/** Monitor or Chart; the PCBA tabs and the frame log are shared by both. */
+function showPage(name) {
+  ui.page = name;
+  document.querySelectorAll('#pages [data-page]').forEach((b) => b.classList.toggle('on', b.dataset.page === name));
+  $('pageMonitor').hidden = name !== 'Monitor';
+  $('pageChart').hidden = name !== 'Chart';
+  chart.show(name === 'Chart');
+  render();
+}
+
+const chart = new ChartPage({
+  getSession: () => ui.session,
+  getPcba: () => ui.pcba,
+  deviceName: () => ui.link?.name,
+  pcbaLabel: (mapId) => `PCBA ${mapId} · ${hexv(mapIdToTargetId(mapId), 2)}`,
+  onRecording: () => queueRender(),        // re-renders the PCBA tabs (locked while recording)
+});
+
 /* ------------------------------------------------------------------ init */
 function init() {
   $('ver').textContent = `v${self.APP_VERSION}`;
@@ -487,9 +524,15 @@ function init() {
   $('btnConnect').addEventListener('click', onConnectClick);
   $('btnCopyLog').addEventListener('click', copyLog);
   $('optPause').addEventListener('change', (e) => { ui.logPaused = e.target.checked; });
+  $('pages').addEventListener('click', (e) => {
+    const b = e.target.closest('[data-page]');
+    if (b) {
+      showPage(b.dataset.page);
+    }
+  });
   $('tabs').addEventListener('click', (e) => {
     const b = e.target.closest('[data-pcba]');
-    if (b) {
+    if (b && !chart.recording) {
       ui.pcba = Number(b.dataset.pcba);
       ui.session?.select?.(ui.pcba);        // legacy: poll this PCBA from now on
       render();
