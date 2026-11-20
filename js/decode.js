@@ -152,13 +152,17 @@ export function decodeRegBlock(d) {
   return { mapId, start, values };
 }
 
-/** 0x00D (push and response): [mapId, 0, u32 LE]. */
+/**
+ * 0x00D: [mapId, 0, u32 LE]. The push carries 6 bytes; the response (Pack_Read_Historical_Error_
+ * Code_Response) declares DataLen = 5, so its last byte (History Error Code4) is cut: null then.
+ */
 export function decodeHistError(d) {
-  if (d.length < 6) {
+  if (d.length < 5) {
     return null;
   }
-  const code = readU32(d, 2);
-  return { mapId: d[0], code, bytes: [code & 0xFF, (code >>> 8) & 0xFF, (code >>> 16) & 0xFF, code >>> 24] };
+  const bytes = [d[2], d[3], d[4], d.length >= 6 ? d[5] : null];
+  const code = bytes[3] == null ? null : readU32(d, 2);
+  return { mapId: d[0], code, bytes };
 }
 
 /** 0x01A: Send_Temp_Data_To_PC, 6 channels x (int32 uV, int16 temp x10). */

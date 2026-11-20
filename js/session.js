@@ -9,6 +9,9 @@
  * Pushes carry REPLY.REQUIRED and are answered with Data[0] = 0 (Send_PCBA_Info_To_PC waits for it).
  * The datalogger drops the session after 10 s without any frame: a keep-alive HANDSHAKE goes out
  * when nothing was sent for KEEPALIVE_MS.
+ * It also clears its "PCBA info sent" flag only on that 10 s timeout (APP_NP_BLE_Task): after a
+ * quick reconnect it keeps the old session and pushes running data only. The blocks still missing
+ * STATIC_PUSH_WAIT_MS after start are therefore asked for (fillMissingBlocks).
  *
  * Read only: no command here changes the device configuration (VERIFY_TIME only sets its RTC).
  */
@@ -25,6 +28,10 @@ const RESPONSE_TIMEOUT_MS = 1500;
 /** Requested payload size: the datalogger answers min(this, its MTU - 8). */
 const WANTED_PAYLOAD = 255;
 const LOG_MAX = 300;
+/** Time the datalogger needs to push the static blocks itself; asking earlier gets no answer. */
+const STATIC_PUSH_WAIT_MS = 2500;
+const STATIC_RETRY_MS = 5000;
+const STATIC_BLOCKS = [[OP.PCBA_INFO, 'info'], [OP.PCBA_PROTECT, 'protect'], [OP.HIST_ERROR, 'hist']];
 
 export function emptyModel() {
   return {
@@ -58,6 +65,9 @@ export class Session extends EventTarget {
     this.lastTx = 0;
     this.timer = null;
     this.running = false;
+    this.startedAt = 0;
+    this.filling = false;
+    this.askedAt = [];
     this.onData = (e) => this.rxBytes(e.detail);
     this.t.addEventListener('data', this.onData);
   }
@@ -102,12 +112,17 @@ export class Session extends EventTarget {
     this.model.info = decodeDataloggerInfo(info.data);
     this.model.seen.info = Date.now();
     this.changed();
+    this.startedAt = Date.now();
 
     clearInterval(this.timer);
     this.timer = setInterval(() => {
-      if (this.running && Date.now() - this.lastTx >= KEEPALIVE_MS) {
+      if (!this.running) {
+        return;
+      }
+      if (Date.now() - this.lastTx >= KEEPALIVE_MS) {
         this.send(request(OP.HANDSHAKE)).catch(() => {});
       }
+      this.fillMissingBlocks();
     }, 1000);
   }
 
@@ -122,14 +137,38 @@ export class Session extends EventTarget {
     this.waiters = [];
   }
 
-  /** Re-reads the static blocks of one PCBA (read only requests). */
-  async refreshPcba(mapId) {
-    for (const op of [OP.PCBA_INFO, OP.PCBA_PROTECT, OP.HIST_ERROR]) {
-      try {
-        await this.ask(op, [mapId], 2);
-      } catch (err) {
-        this.addLog('err', `${OP_NAME[op]} map ${mapId}: ${err.message}`);
+  /** Asks for the static blocks of every PCBA that sends running data but has not pushed them. */
+  async fillMissingBlocks() {
+    const now = Date.now();
+    if (this.filling || now - this.startedAt < STATIC_PUSH_WAIT_MS) {
+      return;
+    }
+    const todo = this.model.pcba
+      .map((p, mapId) => ({ p, mapId }))
+      .filter(({ p, mapId }) => p.seen.run && STATIC_BLOCKS.some(([, key]) => !p.seen[key])
+        && now - (this.askedAt[mapId] || 0) >= STATIC_RETRY_MS);
+    if (!todo.length) {
+      return;
+    }
+    this.filling = true;
+    try {
+      for (const { p, mapId } of todo) {
+        this.askedAt[mapId] = Date.now();
+        for (const [op, key] of STATIC_BLOCKS) {
+          if (!this.running) {
+            return;
+          }
+          if (!p.seen[key]) {
+            try {
+              await this.ask(op, [mapId], 2);
+            } catch (err) {
+              this.addLog('err', `${OP_NAME[op]} map ${mapId}: ${err.message}`);
+            }
+          }
+        }
       }
+    } finally {
+      this.filling = false;
     }
   }
 
