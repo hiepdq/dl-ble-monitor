@@ -23,7 +23,7 @@
       <img src="icons/icon.svg" alt="" width="28" height="28">
       <div>
         <h1>Datalogger BLE Monitor</h1>
-        <div class="sub"><span id="ver"></span> · <span id="net"></span> · <span id="offline"></span></div>
+        <div class="sub"><span id="ver"></span></div>
       </div>
     </div>
     <div class="conn">
@@ -33,23 +33,16 @@
   </header>
 
   <div id="banner" class="banner" hidden></div>
-  <div id="update" class="banner banner-info" hidden>
-    A new version is available. <button id="btnReload" class="btn btn-small" type="button">Reload</button>
-  </div>
 
   <main id="main">
     <section class="card" id="empty">
       <h2>Getting started</h2>
       <p>Press <b>Connect</b> and choose the <code>Debugger-xxxx</code> device. This page only reads and
-        displays values, it never changes the device configuration.</p>
-      <p>No device at hand? Press <b>Demo</b> to try the interface with a simulated datalogger.</p>
-      <div class="row">
-        <button id="btnDemo" class="btn" type="button">Demo</button>
-      </div>
+        displays values, it never changes the device configuration. On connect it sets the datalogger
+        clock to the phone time.</p>
       <details class="opts">
         <summary>Options</summary>
         <label><input type="checkbox" id="optAll"> Show all BLE devices in the chooser (if <code>Debugger-xxxx</code> does not appear)</label>
-        <label><input type="checkbox" id="optTime"> Set the datalogger RTC to the phone time on connect</label>
         <label>Protocol
           <select id="optProto">
             <option value="auto" selected>Auto (new protocol, else legacy)</option>

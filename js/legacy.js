@@ -5,7 +5,8 @@
  *
  * Request, 20 bytes: [targetId, cmd, 0 x11, yy, MM, dd, hh, mm, ss, checksum]
  *   checksum = ~sum(bytes 0..18) + 1 (ntech_calculate_checksum).
- *   Bytes 13..18 set the datalogger RTC on the first valid frame after its boot; zeros leave it.
+ *   Bytes 13..18 carry the phone time: the datalogger sets its RTC from the first valid frame
+ *   after its boot.
  * Answer, 68 bytes: [0xAA, start, 32 x u16 LE registers, status, checksum of bytes 1..66]
  *   status: bit0 tool bus OK, bit1 BLE OK, bit2 tool boot mode, bit3 TF card in, bit4 TF logging.
  *   The datalogger overwrites registers 0xB1..0xB7: 0xB1 low byte = target id polled on the tool
@@ -140,11 +141,10 @@ function targetIdToMapId(id) {
 
 /** Same interface as Session (model, start / stop / dispose, 'update' / 'log' events) plus select(). */
 export class LegacySession extends EventTarget {
-  constructor(transport, { syncTime = false } = {}) {
+  constructor(transport) {
     super();
     this.legacy = true;
     this.t = transport;
-    this.syncTime = syncTime;
     this.parser = new LegacyParser();
     this.model = emptyModel();
     this.model.legacy = { status: null, fwDate: null, busTargetId: null, misses: 0 };
@@ -235,7 +235,7 @@ export class LegacySession extends EventTarget {
         this.waiter = { resolve, reject, timer };
       });
       try {
-        await this.send(legacyRequest(this.target, cmd, this.syncTime ? new Date() : null));
+        await this.send(legacyRequest(this.target, cmd, new Date()));
         return await answer;
       } catch (err) {
         if (this.waiter) {

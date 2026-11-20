@@ -2,7 +2,7 @@
  * Datalogger session over any byte transport ({ write(bytes): Promise, 'data' / 'state' events }).
  *
  * Start-up (same order the firmware expects, app_np_ble.c APP_NP_BLE_Task):
- *   HANDSHAKE -> MAX_PAYLOAD (negotiated size) -> [VERIFY_TIME, optional] -> DATALOGGER_INFO
+ *   HANDSHAKE -> MAX_PAYLOAD (negotiated size) -> VERIFY_TIME (phone time) -> DATALOGGER_INFO
  * DATALOGGER_INFO sets the datalogger "PC connected" flag; from then on it pushes by itself:
  *   0x005 / 0x007 / 0x00D once per PCBA, then 0x006 running registers every bus cycle,
  *   0x01A temperature, 0x01B own V/I, 0x01C / 0x01D battery.
@@ -10,8 +10,7 @@
  * The datalogger drops the session after 10 s without any frame: a keep-alive HANDSHAKE goes out
  * when nothing was sent for KEEPALIVE_MS.
  *
- * Read only: no command here changes the device configuration (VERIFY_TIME only sets its RTC and
- * is off by default).
+ * Read only: no command here changes the device configuration (VERIFY_TIME only sets its RTC).
  */
 import {
   FrameParser, MultiAssembler, OP, OP_NAME, REPLY, TYPE_MULTI, ackPush, request, hex,
@@ -47,10 +46,9 @@ export function emptyModel() {
 }
 
 export class Session extends EventTarget {
-  constructor(transport, { syncTime = false, handshakeTries = 3 } = {}) {
+  constructor(transport, { handshakeTries = 3 } = {}) {
     super();
     this.t = transport;
-    this.syncTime = syncTime;
     this.handshakeTries = handshakeTries;
     this.parser = new FrameParser();
     this.multi = new MultiAssembler();
@@ -91,10 +89,13 @@ export class Session extends EventTarget {
     const mp = await this.ask(OP.MAX_PAYLOAD, [WANTED_PAYLOAD], 3);
     this.model.payloadSize = mp.data[0];
 
-    if (this.syncTime) {
-      const n = new Date();
+    // the clock is a convenience: a missing answer must not block the monitoring
+    const n = new Date();
+    try {
       await this.ask(OP.VERIFY_TIME, [n.getFullYear() % 100, n.getMonth() + 1, n.getDate(),
         n.getHours(), n.getMinutes(), n.getSeconds()], 2);
+    } catch (err) {
+      this.addLog('err', `RTC not set: ${err.message}`);
     }
 
     const info = await this.ask(OP.DATALOGGER_INFO, [], 3);

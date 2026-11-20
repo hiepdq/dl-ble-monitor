@@ -2,7 +2,6 @@
  * UI of the Datalogger BLE Monitor (display only).
  */
 import { BleLink, bluetoothAvailable, describeError } from './ble.js';
-import { SimLink } from './sim.js';
 import { Session } from './session.js';
 import { LegacySession } from './legacy.js';
 import { MAX_PCBAS, REG, mapIdToTargetId, pcbaView } from './decode.js';
@@ -13,15 +12,13 @@ const RECONNECT_TRIES = 5;
 const RECONNECT_DELAY_MS = 1500;
 const STALE_MS = 5000;
 const LOG_LINES = 300;
-const CACHE_PREFIX = 'dl-ble-monitor-';        // same as sw.js
-const SW_READY_TIMEOUT_MS = 15000;
+const OLD_CACHE_PREFIX = 'dl-ble-monitor-';    // offline cache of versions <= 0.3.0
 
 const ui = {
   link: null,
   session: null,
   wanted: false,           // the user wants to stay connected (auto reconnect)
   reconnecting: false,
-  demo: false,
   pcba: 0,
   renderQueued: false,
   logPaused: false,
@@ -70,7 +67,7 @@ async function onConnectClick() {
   try {
     const link = ui.link instanceof BleLink ? ui.link : new BleLink();
     await link.choose({ showAll: $('optAll').checked });     // must stay first: user gesture
-    useLink(link, false);
+    useLink(link);
     await startLink();
   } catch (err) {
     if (err?.name !== 'NotFoundError') {                    // NotFoundError = chooser cancelled
@@ -82,16 +79,7 @@ async function onConnectClick() {
   }
 }
 
-async function onDemoClick() {
-  if (ui.link) {
-    ui.wanted = false;
-    ui.link.disconnect();
-  }
-  useLink(new SimLink({ pcbaCount: 2, payloadCap: 60 }), true);
-  await startLink();
-}
-
-function useLink(link, demo) {
+function useLink(link) {
   if (ui.link && ui.link !== link) {
     ui.link.removeEventListener('state', onLinkState);
     ui.session?.dispose();
@@ -101,7 +89,6 @@ function useLink(link, demo) {
     link.addEventListener('state', onLinkState);
   }
   ui.link = link;
-  ui.demo = demo;
 }
 
 async function startLink() {
@@ -116,25 +103,24 @@ async function startLink() {
  * the legacy 20-byte protocol (FW V4.x) when the HANDSHAKE gets no answer.
  */
 async function startSession() {
-  const proto = ui.demo ? 'new' : $('optProto').value;
-  const syncTime = $('optTime').checked && !ui.demo;
+  const proto = $('optProto').value;
   setStatus('Handshaking…', 'busy');
   try {
     if (proto === 'legacy') {
-      await attach(new LegacySession(ui.link, { syncTime }));
+      await attach(new LegacySession(ui.link));
     } else {
       try {
-        await attach(new Session(ui.link, { syncTime, handshakeTries: proto === 'auto' ? 2 : 3 }));
+        await attach(new Session(ui.link, { handshakeTries: proto === 'auto' ? 2 : 3 }));
       } catch (err) {
         if (proto !== 'auto' || !err.noHandshake || !ui.link.connected) {
           throw err;
         }
         setStatus('Trying legacy protocol…', 'busy');
-        await attach(new LegacySession(ui.link, { syncTime }),
+        await attach(new LegacySession(ui.link),
           'no answer to HANDSHAKE (0x001): using the legacy 20-byte protocol (FW V4.x)');
       }
     }
-    const tag = ui.demo ? ' (demo)' : (ui.session.legacy ? ' (legacy)' : '');
+    const tag = ui.session.legacy ? ' (legacy)' : '';
     setStatus(`${ui.link.name || 'Connected'}${tag}`, 'on');
     $('empty').hidden = true;
     $('view').hidden = false;
@@ -167,7 +153,7 @@ function onLinkState(e) {
   } else if (st === 'disconnected') {
     ui.session?.stop();
     setStatus('Not connected', 'off');
-    if (ui.wanted && !ui.demo && !ui.reconnecting) {
+    if (ui.wanted && !ui.reconnecting) {
       reconnect().finally(() => { ui.reconnecting = false; });
     }
   }
@@ -202,7 +188,7 @@ function noBluetoothText() {
   }
   return /iPhone|iPad|iPod/.test(navigator.userAgent)
     ? 'Safari on iPhone / iPad does not support Web Bluetooth. Open this page in the <b>Bluefy</b> app (App Store).'
-    : 'This browser does not support Web Bluetooth. Use <b>Chrome</b> or <b>Edge</b> (Android, Windows, macOS). <b>Demo</b> still works.';
+    : 'This browser does not support Web Bluetooth. Use <b>Chrome</b> or <b>Edge</b> (Android, Windows, macOS).';
 }
 
 /* ------------------------------------------------------------------ render */
@@ -461,89 +447,27 @@ async function copyLog() {
   setTimeout(() => { btn.textContent = 'Copy'; }, 1500);
 }
 
-/* ------------------------------------------------------------------ PWA */
-function setupNetworkStatus() {
-  const show = () => { $('net').textContent = navigator.onLine ? 'online' : 'offline'; };
-  window.addEventListener('online', show);
-  window.addEventListener('offline', show);
-  show();
-}
-
-/** Shows whether the offline copy of this version is in the cache. */
-function watchOfflineCache() {
-  const label = $('offline');
-  let ready = false;
-  label.textContent = 'saving for offline…';
-  navigator.serviceWorker.ready.then(async () => {
-    ready = true;
-    for (let i = 0; i < 20; i++) {
-      try {
-        if ((await caches.keys()).includes(CACHE_PREFIX + self.APP_VERSION)) {
-          label.textContent = '✓ available offline';
-          return;
-        }
-      } catch {
-        break;
-      }
-      await sleep(500);
-    }
-    label.textContent = '✗ not saved for offline';
-  });
-  setTimeout(() => {
-    if (!ready) {
-      label.textContent = '✗ not saved for offline (browser may not support it)';
-    }
-  }, SW_READY_TIMEOUT_MS);
-}
-
-/** Registers sw.js and offers "reload" when a new version is installed. */
-function registerServiceWorker() {
-  navigator.serviceWorker.register('sw.js').then((reg) => {
-    const offer = (worker) => {
-      $('update').hidden = false;
-      $('btnReload').onclick = () => worker.postMessage('skipWaiting');
-    };
-    if (reg.waiting && navigator.serviceWorker.controller) {
-      offer(reg.waiting);
-    }
-    reg.addEventListener('updatefound', () => {
-      const w = reg.installing;
-      w?.addEventListener('statechange', () => {
-        if (w.state === 'installed' && navigator.serviceWorker.controller) {
-          offer(w);
-        }
-      });
-    });
-    setInterval(() => reg.update().catch(() => {}), 60000);
-  }).catch(() => {
-    $('offline').textContent = '✗ not saved for offline';
-  });
-
-  let reloading = false;
-  navigator.serviceWorker.addEventListener('controllerchange', () => {
-    if (!reloading) {
-      reloading = true;
-      location.reload();
-    }
-  });
-}
-
-function setupPwa() {
-  $('ver').textContent = `v${self.APP_VERSION}`;
-  setupNetworkStatus();
-  if (!('serviceWorker' in navigator) || !window.caches) {
-    $('offline').textContent = 'offline not supported by this browser';
-    return;
+/* ------------------------------------------------------------------ old offline copy */
+/**
+ * Versions up to 0.3.0 installed a service worker with an offline cache. The page is now always
+ * loaded from the server, so any worker and cache left by those versions are removed.
+ */
+async function removeOfflineCopy() {
+  try {
+    const regs = await navigator.serviceWorker?.getRegistrations?.() ?? [];
+    await Promise.all(regs.map((r) => r.unregister()));
+    const keys = window.caches ? await caches.keys() : [];
+    await Promise.all(keys.filter((k) => k.startsWith(OLD_CACHE_PREFIX)).map((k) => caches.delete(k)));
+  } catch {
+    /* nothing to clean or storage blocked */
   }
-  watchOfflineCache();
-  registerServiceWorker();
 }
 
 /* ------------------------------------------------------------------ init */
 function init() {
-  setupPwa();
+  $('ver').textContent = `v${self.APP_VERSION}`;
+  removeOfflineCopy();
   $('btnConnect').addEventListener('click', onConnectClick);
-  $('btnDemo').addEventListener('click', onDemoClick);
   $('btnCopyLog').addEventListener('click', copyLog);
   $('optPause').addEventListener('change', (e) => { ui.logPaused = e.target.checked; });
   $('tabs').addEventListener('click', (e) => {
@@ -557,9 +481,6 @@ function init() {
   setInterval(renderAges, 1000);
   if (!bluetoothAvailable()) {
     showBanner(noBluetoothText());
-  }
-  if (new URLSearchParams(location.search).has('demo')) {
-    onDemoClick();
   }
 }
 
